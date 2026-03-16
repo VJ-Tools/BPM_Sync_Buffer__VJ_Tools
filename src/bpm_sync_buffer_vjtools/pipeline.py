@@ -303,7 +303,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=0,
                 label="Latency (ms)",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -336,7 +336,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=3,
                 label="Speed",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -345,7 +345,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=4,
                 label="Auto Speed",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -356,7 +356,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=5,
                 label="Auto Target Fill",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -369,7 +369,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=6,
                 label="Tempo Offset %",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -380,7 +380,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=7,
                 label="HOLD",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -389,7 +389,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=8,
                 label="Reset",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -398,7 +398,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=9,
                 label="Show Overlay",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -419,7 +419,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=11,
                 label="BPM",
-                category="input",
+                category="configuration",
             ),
         )
 
@@ -437,7 +437,7 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=13,
                 label="OSC Beat",
-                category="input",
+                category="configuration",
             ),
         )
 else:
