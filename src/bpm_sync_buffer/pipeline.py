@@ -328,7 +328,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=0,
                 label="Buffer Mode",
-                description="passthrough = no delay, latency = ms delay, beat = beat-locked delay",
                 category="input",
             ),
         )
@@ -340,7 +339,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=1,
                 label="Latency (ms)",
-                description="Buffer delay in milliseconds. Higher = smoother but more latency.",
                 category="input",
             ),
         )
@@ -350,7 +348,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=2,
                 label="Beat Division",
-                description="Musical interval: 1/8, 1/4, 1/2, 1 bar, 2 bar, 4 bar, 8 bar, 16 bar",
                 category="input",
             ),
         )
@@ -362,7 +359,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=3,
                 label="× Multiplier",
-                description="Multiply the division (e.g. 2 × 1 bar = 2 bars behind)",
                 category="input",
             ),
         )
@@ -372,7 +368,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=4,
                 label="Show Overlay",
-                description="Draw buffer fill indicator on output",
                 category="input",
             ),
         )
@@ -382,7 +377,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=5,
                 label="HOLD",
-                description="Freeze playback at current position",
                 category="input",
             ),
         )
@@ -392,7 +386,6 @@ if _HAS_SCOPE:
             json_schema_extra=ui_field_config(
                 order=6,
                 label="Reset",
-                description="Flush buffer and restart",
                 category="input",
             ),
         )
