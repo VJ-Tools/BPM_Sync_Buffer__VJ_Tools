@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bpm-sync-buffer"
-version = "0.2.0"
+version = "0.2.1"
 description = "BPM Sync Buffer — Adjustable latency buffer for Daydream Scope. Smooths bursty AI video generation into steady framerate output. Beat-locked and millisecond delay modes with visual fill overlay."
 requires-python = ">=3.10"
 dependencies = [
