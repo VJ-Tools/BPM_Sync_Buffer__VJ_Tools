@@ -8,7 +8,7 @@ accumulates frames and releases them at a steady rate.
 Buffer modes:
   - passthrough: No buffering, frames pass straight through
   - latency:     Adjustable delay (ms) — FIFO + binary search. MIDI-fader friendly.
-  - beat:        Beat-locked delay — delay = beat_depth × ms_per_beat
+  - beat:        Beat-locked delay — musical divisions (1/8 to 16 bar) × multiplier
 
 Visual overlay shows buffer fill level, mode, FPS, and delay.
 
@@ -235,6 +235,31 @@ class BufferMode(str, Enum):
     BEAT = "beat"
 
 
+class BeatDivision(str, Enum):
+    """Musical beat subdivisions for rhythm-locked buffer delay."""
+    EIGHTH = "1/8"         # Half a beat
+    QUARTER = "1/4"        # One beat
+    HALF = "1/2"           # Two beats
+    ONE_BAR = "1 bar"      # 4 beats
+    TWO_BAR = "2 bar"      # 8 beats
+    FOUR_BAR = "4 bar"     # 16 beats
+    EIGHT_BAR = "8 bar"    # 32 beats
+    SIXTEEN_BAR = "16 bar" # 64 beats
+
+
+# Beat multipliers: how many beats each division represents
+_BEAT_MULTIPLIERS = {
+    BeatDivision.EIGHTH: 0.5,
+    BeatDivision.QUARTER: 1.0,
+    BeatDivision.HALF: 2.0,
+    BeatDivision.ONE_BAR: 4.0,
+    BeatDivision.TWO_BAR: 8.0,
+    BeatDivision.FOUR_BAR: 16.0,
+    BeatDivision.EIGHT_BAR: 32.0,
+    BeatDivision.SIXTEEN_BAR: 64.0,
+}
+
+
 # ─── Scope SDK imports ─────────────────────────────────────────────────────
 
 try:
@@ -320,14 +345,24 @@ if _HAS_SCOPE:
             ),
         )
 
-        beat_buffer_depth: int = Field(
-            default=4,
-            ge=1,
-            le=64,
+        beat_division: BeatDivision = Field(
+            default=BeatDivision.ONE_BAR,
             json_schema_extra=ui_field_config(
                 order=2,
-                label="Beat Depth",
-                description="Buffer delay in beats. 4 = one bar behind.",
+                label="Beat Division",
+                description="Musical interval: 1/8, 1/4, 1/2, 1 bar, 2 bar, 4 bar, 8 bar, 16 bar",
+                category="input",
+            ),
+        )
+
+        beat_multiplier: int = Field(
+            default=1,
+            ge=1,
+            le=16,
+            json_schema_extra=ui_field_config(
+                order=3,
+                label="× Multiplier",
+                description="Multiply the division (e.g. 2 × 1 bar = 2 bars behind)",
                 category="input",
             ),
         )
@@ -335,7 +370,7 @@ if _HAS_SCOPE:
         show_overlay: bool = Field(
             default=True,
             json_schema_extra=ui_field_config(
-                order=3,
+                order=4,
                 label="Show Overlay",
                 description="Draw buffer fill indicator on output",
                 category="input",
@@ -345,7 +380,7 @@ if _HAS_SCOPE:
         hold: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=4,
+                order=5,
                 label="HOLD",
                 description="Freeze playback at current position",
                 category="input",
@@ -355,7 +390,7 @@ if _HAS_SCOPE:
         reset_buffer: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=5,
+                order=6,
                 label="Reset",
                 description="Flush buffer and restart",
                 category="input",
@@ -367,7 +402,7 @@ if _HAS_SCOPE:
         clock_source: ClockSource = Field(
             default=ClockSource.INTERNAL,
             json_schema_extra=ui_field_config(
-                order=6,
+                order=7,
                 label="Clock Source",
             ),
         )
@@ -377,7 +412,7 @@ if _HAS_SCOPE:
             ge=20.0,
             le=999.0,
             json_schema_extra=ui_field_config(
-                order=7,
+                order=8,
                 label="BPM",
                 category="input",
             ),
@@ -386,7 +421,7 @@ if _HAS_SCOPE:
         midi_device: str = Field(
             default="",
             json_schema_extra=ui_field_config(
-                order=8,
+                order=9,
                 label="MIDI Clock Device",
             ),
         )
@@ -395,7 +430,7 @@ if _HAS_SCOPE:
             default=0.0,
             ge=0.0,
             json_schema_extra=ui_field_config(
-                order=9,
+                order=10,
                 label="OSC Beat",
                 category="input",
             ),
@@ -407,7 +442,8 @@ else:
             self.pipeline_id = kwargs.get("pipeline_id", "bpm_sync_buffer__vj_tools")
             self.buffer_mode = kwargs.get("buffer_mode", "latency")
             self.latency_delay_ms = kwargs.get("latency_delay_ms", 500)
-            self.beat_buffer_depth = kwargs.get("beat_buffer_depth", 4)
+            self.beat_division = kwargs.get("beat_division", "1 bar")
+            self.beat_multiplier = kwargs.get("beat_multiplier", 1)
             self.show_overlay = kwargs.get("show_overlay", True)
             self.hold = kwargs.get("hold", False)
             self.reset_buffer = kwargs.get("reset_buffer", False)
@@ -497,7 +533,8 @@ class BpmSyncBufferPostprocessor(Pipeline):
         # --- Read runtime params ---
         mode = str(kwargs.get("buffer_mode", getattr(self.config, "buffer_mode", "latency")))
         latency_ms = int(kwargs.get("latency_delay_ms", getattr(self.config, "latency_delay_ms", 500)))
-        beat_depth = int(kwargs.get("beat_buffer_depth", getattr(self.config, "beat_buffer_depth", 4)))
+        beat_div_str = str(kwargs.get("beat_division", getattr(self.config, "beat_division", "1 bar")))
+        beat_mult = int(kwargs.get("beat_multiplier", getattr(self.config, "beat_multiplier", 1)))
         show_overlay = kwargs.get("show_overlay", getattr(self.config, "show_overlay", True))
         reset = kwargs.get("reset_buffer", getattr(self.config, "reset_buffer", False))
         hold = kwargs.get("hold", getattr(self.config, "hold", False))
@@ -531,7 +568,7 @@ class BpmSyncBufferPostprocessor(Pipeline):
         # --- Hold ---
         if hold and not self._hold_active:
             self._hold_active = True
-            delay_s = self._delay_seconds(mode, latency_ms, beat_depth)
+            delay_s = self._delay_seconds(mode, latency_ms, beat_div_str, beat_mult)
             self._hold_target_time = time.monotonic() - delay_s
         elif not hold and self._hold_active:
             self._hold_active = False
@@ -566,10 +603,11 @@ class BpmSyncBufferPostprocessor(Pipeline):
             self._fifo.pop(0)
 
         # --- Select output frame ---
-        if mode == "passthrough":
+        delay_s = self._delay_seconds(mode, latency_ms, beat_div_str, beat_mult)
+        if mode == "passthrough" or delay_s <= 0:
+            # Zero delay = passthrough (latency fader all the way down)
             output = self._fifo[-1].frame if self._fifo else np.zeros((H, W, C), dtype=np.uint8)
         else:
-            delay_s = self._delay_seconds(mode, latency_ms, beat_depth)
             output = self._pick_delayed(delay_s)
 
         if output is None:
@@ -579,18 +617,26 @@ class BpmSyncBufferPostprocessor(Pipeline):
 
         # --- Overlay ---
         if show_overlay:
-            delay_s = self._delay_seconds(mode, latency_ms, beat_depth)
-            output = self._draw_overlay(output, mode, delay_s, latency_ms, beat_depth)
+            output = self._draw_overlay(output, mode, delay_s, latency_ms,
+                                         beat_div_str, beat_mult)
 
         out_tensor = torch.from_numpy(output).float().unsqueeze(0) / 255.0
         return {"video": out_tensor}
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
-    def _delay_seconds(self, mode: str, latency_ms: int, beat_depth: int) -> float:
+    def _delay_seconds(self, mode: str, latency_ms: int,
+                        beat_div_str: str = "1 bar", beat_mult: int = 1) -> float:
         if mode == "beat":
             bpm = self._clock.tempo or self.FALLBACK_BPM
-            return (beat_depth * 60_000.0 / bpm) / 1000.0
+            # Resolve division → base beats
+            try:
+                division = BeatDivision(beat_div_str)
+            except ValueError:
+                division = BeatDivision.ONE_BAR
+            base_beats = _BEAT_MULTIPLIERS.get(division, 4.0)
+            total_beats = base_beats * beat_mult
+            return total_beats * 60.0 / bpm
         elif mode == "latency":
             return latency_ms / 1000.0
         return 0.0
@@ -631,7 +677,8 @@ class BpmSyncBufferPostprocessor(Pipeline):
 
     def _draw_overlay(
         self, frame: np.ndarray, mode: str,
-        delay_s: float, latency_ms: int, beat_depth: int,
+        delay_s: float, latency_ms: int,
+        beat_div_str: str = "1 bar", beat_mult: int = 1,
     ) -> np.ndarray:
         """Draw buffer fill indicator and stats."""
         H, W = frame.shape[:2]
@@ -698,9 +745,13 @@ class BpmSyncBufferPostprocessor(Pipeline):
         # Left: mode + delay
         if mode == "beat":
             bpm = self._clock.tempo or self.FALLBACK_BPM
-            label = f"BEAT x{beat_depth}  ({delay_s*1000:.0f}ms @ {bpm:.0f}bpm)"
+            div_label = beat_div_str
+            if beat_mult > 1:
+                label = f"BEAT {beat_mult}x {div_label}  ({delay_s*1000:.0f}ms @ {bpm:.0f}bpm)"
+            else:
+                label = f"BEAT {div_label}  ({delay_s*1000:.0f}ms @ {bpm:.0f}bpm)"
         elif mode == "latency":
-            label = f"DELAY {latency_ms}ms"
+            label = f"DELAY {latency_ms}ms" if latency_ms > 0 else "PASSTHROUGH"
         else:
             label = "PASSTHROUGH"
 

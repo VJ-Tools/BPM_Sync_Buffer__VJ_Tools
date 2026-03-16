@@ -56,7 +56,8 @@ def test_beat_buffer():
     from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(
-        buffer_mode="beat", beat_buffer_depth=2, clock_bpm=120.0, show_overlay=False
+        buffer_mode="beat", beat_division="1/2", beat_multiplier=2,
+        clock_bpm=120.0, show_overlay=False
     )
     buf = BpmSyncBufferPostprocessor(config)
 
