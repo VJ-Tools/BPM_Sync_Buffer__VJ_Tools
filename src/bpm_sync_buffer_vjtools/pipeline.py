@@ -522,6 +522,7 @@ class BpmSyncBufferPostprocessor(Pipeline):
         self._playback_time: float = 0.0  # wall-clock time of current playback position
         self._last_call_time: float = 0.0  # when __call__ was last invoked
         self._current_output: Optional[np.ndarray] = None
+        self._smoothed_delay_s: float = 0.0  # smoothed delay target (ramps, no jumps)
 
         # Hold
         self._hold_active: bool = False
@@ -604,6 +605,7 @@ class BpmSyncBufferPostprocessor(Pipeline):
             self._last_call_time = 0.0
             self._prev_fill_error = 0.0
             self._effective_speed = 1.0
+            self._smoothed_delay_s = delay_s
             logger.info("[Buffer] Reset")
 
         # ── Hold ──────────────────────────────────────────────────────
@@ -648,8 +650,18 @@ class BpmSyncBufferPostprocessor(Pipeline):
         dt = now - self._last_call_time if self._last_call_time > 0 else 0.0
         self._last_call_time = now
 
-        if delay_s <= 0 or not self._fifo:
-            # Passthrough: no delay, just return latest frame
+        # Smooth the delay target so latency fader changes don't cause jumps.
+        # Exponential smoothing: ~93% converged in 0.5s at 10fps
+        RAMP_RATE = 6.0  # higher = faster ramp (time-constant ≈ 1/RAMP_RATE)
+        if self._smoothed_delay_s <= 0:
+            self._smoothed_delay_s = delay_s  # first call: snap
+        elif abs(self._smoothed_delay_s - delay_s) > 0.001:
+            alpha = 1.0 - pow(2.718281828, -RAMP_RATE * dt) if dt > 0 else 1.0
+            self._smoothed_delay_s += alpha * (delay_s - self._smoothed_delay_s)
+        effective_delay = self._smoothed_delay_s
+
+        if effective_delay <= 0.005 or not self._fifo:
+            # Passthrough: no meaningful delay, just return latest frame
             output = self._fifo[-1].frame if self._fifo else np.zeros((H, W, C), dtype=np.uint8)
             self._effective_speed = 1.0
         elif self._hold_active:
@@ -665,14 +677,14 @@ class BpmSyncBufferPostprocessor(Pipeline):
             # 2. BPM compensation: if the frame was captured at a different BPM,
             #    adjust speed so musical timing is preserved
             #    (playback_bpm / capture_bpm) ratio
-            target_frame = self._find_frame_at_delay(delay_s, now)
+            target_frame = self._find_frame_at_delay(effective_delay, now)
             if target_frame is not None and target_frame.capture_bpm > 0:
                 bpm_ratio = adjusted_bpm / target_frame.capture_bpm
                 effective *= bpm_ratio
 
             # 3. Auto-speed: PD controller to maintain target fill level
             if auto_speed:
-                fill = self._buffer_fill(delay_s)
+                fill = self._buffer_fill(effective_delay)
                 fill_error = fill - auto_target  # positive = too full, negative = depleting
                 d_error = (fill_error - self._prev_fill_error) / max(dt, 0.001) if dt > 0 else 0.0
                 self._prev_fill_error = fill_error
@@ -686,12 +698,21 @@ class BpmSyncBufferPostprocessor(Pipeline):
             self._effective_speed = effective
 
             # ── Advance playback head ─────────────────────────────────
-            # Initialize playback time if needed
-            if self._playback_time <= 0:
-                self._playback_time = now - delay_s
+            # Target position = now - smoothed_delay
+            target_playback = now - effective_delay
 
-            # Advance by dt * effective_speed
-            self._playback_time += dt * effective
+            if self._playback_time <= 0:
+                # First call: snap to target
+                self._playback_time = target_playback
+            else:
+                # Advance by dt * speed, then gently steer toward target
+                # This prevents jumps when latency changes mid-stream
+                self._playback_time += dt * effective
+
+                # Soft correction toward target (prevents drift accumulation)
+                position_error = target_playback - self._playback_time
+                correction_alpha = min(1.0, RAMP_RATE * dt) if dt > 0 else 1.0
+                self._playback_time += position_error * correction_alpha
 
             # Don't let playback head go past the newest frame
             if self._fifo:
@@ -714,7 +735,7 @@ class BpmSyncBufferPostprocessor(Pipeline):
         # ── Overlay ───────────────────────────────────────────────────
         if show_overlay:
             output = self._draw_overlay(
-                output, delay_s, latency_ms, self._effective_speed,
+                output, effective_delay, latency_ms, self._effective_speed,
                 auto_speed, adjusted_bpm, tempo_offset,
             )
 
