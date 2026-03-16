@@ -394,7 +394,7 @@ if _HAS_SCOPE:
         )
 
         show_overlay: bool = Field(
-            default=True,
+            default=False,
             json_schema_extra=ui_field_config(
                 order=9,
                 label="Show Overlay",
@@ -454,7 +454,7 @@ else:
             self.tempo_offset_pct = kwargs.get("tempo_offset_pct", 0.0)
             self.hold = kwargs.get("hold", False)
             self.reset_buffer = kwargs.get("reset_buffer", False)
-            self.show_overlay = kwargs.get("show_overlay", True)
+            self.show_overlay = kwargs.get("show_overlay", False)
             self.clock_source = kwargs.get("clock_source", "internal")
             self.clock_bpm = kwargs.get("clock_bpm", 120.0)
             self.midi_device = kwargs.get("midi_device", "")
