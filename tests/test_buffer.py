@@ -13,7 +13,7 @@ def make_frame(h=336, w=576, val=128):
 
 def test_passthrough():
     """Passthrough mode: output matches input immediately."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(buffer_mode="passthrough", show_overlay=False)
     buf = BpmSyncBufferPostprocessor(config)
@@ -33,7 +33,7 @@ def test_passthrough():
 
 def test_latency_buffer():
     """Latency mode: frames are delayed."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(buffer_mode="latency", latency_delay_ms=200, show_overlay=False)
     buf = BpmSyncBufferPostprocessor(config)
@@ -53,7 +53,7 @@ def test_latency_buffer():
 
 def test_beat_buffer():
     """Beat mode: delay based on beat depth."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(
         buffer_mode="beat", beat_division="1/2", beat_multiplier=2,
@@ -73,7 +73,7 @@ def test_beat_buffer():
 
 def test_hold():
     """Hold freezes playback."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(buffer_mode="latency", latency_delay_ms=100, show_overlay=False)
     buf = BpmSyncBufferPostprocessor(config)
@@ -95,7 +95,7 @@ def test_hold():
 
 def test_reset():
     """Reset clears the buffer."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(buffer_mode="latency", show_overlay=False)
     buf = BpmSyncBufferPostprocessor(config)
@@ -112,7 +112,7 @@ def test_reset():
 
 def test_overlay():
     """Overlay draws without crashing."""
-    from bpm_sync_buffer.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
+    from bpm_sync_buffer_vjtools.pipeline import BpmSyncBufferPostprocessor, BpmSyncBufferConfig
 
     config = BpmSyncBufferConfig(buffer_mode="latency", latency_delay_ms=500, show_overlay=True)
     buf = BpmSyncBufferPostprocessor(config)

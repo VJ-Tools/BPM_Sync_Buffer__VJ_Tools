@@ -306,7 +306,7 @@ class _BufferedFrame:
 if _HAS_SCOPE:
     class BpmSyncBufferConfig(BasePipelineConfig):
         """Postprocessor config — latency buffer with visual fill indicator."""
-        pipeline_id: str = "bpm_sync_buffer__vj_tools"
+        pipeline_id: str = "bpm_sync_buffer_vjtools"
         pipeline_name: str = "BPM Sync Buffer (VJ.Tools)"
         pipeline_description: str = (
             "Adjustable latency buffer for smooth AI video playback. "
@@ -432,7 +432,7 @@ else:
     class BpmSyncBufferConfig:
         """Standalone config for testing outside Scope."""
         def __init__(self, **kwargs):
-            self.pipeline_id = kwargs.get("pipeline_id", "bpm_sync_buffer__vj_tools")
+            self.pipeline_id = kwargs.get("pipeline_id", "bpm_sync_buffer_vjtools")
             self.buffer_mode = kwargs.get("buffer_mode", "latency")
             self.latency_delay_ms = kwargs.get("latency_delay_ms", 500)
             self.beat_division = kwargs.get("beat_division", "1 bar")

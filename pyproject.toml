@@ -22,7 +22,7 @@ midi = ["mido>=1.3.0", "python-rtmidi>=1.5.0"]
 dev = ["pytest>=7.0.0"]
 
 [project.entry-points."scope"]
-bpm_sync_buffer = "bpm_sync_buffer.plugin"
+bpm_sync_buffer_vjtools = "bpm_sync_buffer_vjtools.plugin"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/bpm_sync_buffer"]
+packages = ["src/bpm_sync_buffer_vjtools"]
