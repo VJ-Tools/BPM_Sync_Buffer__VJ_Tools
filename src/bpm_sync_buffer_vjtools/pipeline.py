@@ -5,25 +5,30 @@ Postprocessor that buffers AI-generated frames for smooth, consistent playback.
 Instead of bursty chunk output (12 frames at once, then nothing), the buffer
 accumulates frames and releases them at a steady rate.
 
-Buffer modes:
-  - passthrough: No buffering, frames pass straight through
-  - latency:     Adjustable delay (ms) — FIFO + binary search. MIDI-fader friendly.
-  - beat:        Beat-locked delay — musical divisions (1/8 to 16 bar) × multiplier
+Controls (all MIDI-mappable):
+  - Latency:       Delay fader from min_delay to max_delay (default 0–60 000 ms)
+  - Speed:         Playback speed multiplier (0.25× – 4.0×).  Auto mode adjusts
+                   speed to keep buffer fill at a target level.
+  - BPM:           When known, frames are BPM-stamped at ingest.  If playback BPM
+                   differs from capture BPM, speed auto-compensates.
+  - Tempo Offset:  Manual ±% nudge if detected BPM is wrong.
+  - Hold:          Freeze output on current frame.
+  - Reset:         Flush buffer.
 
-Visual overlay shows buffer fill level, mode, FPS, and delay.
+Visual overlay shows buffer fill level, mode, speed, FPS, and delay.
 
-Clock sources (for beat buffer mode):
-  - Ableton Link: Networked beat sync with DAWs and other Link-enabled apps
-  - MIDI Clock: Standard MIDI timing (24 PPQN) from DJ software, drum machines
-  - OSC: Beat position and BPM pushed from external software
-  - Internal: Free-running clock at configured BPM (fallback)
+Clock sources (for BPM detection):
+  - Ableton Link:  Networked beat sync with DAWs and other Link-enabled apps
+  - MIDI Clock:    Standard MIDI timing (24 PPQN) from DJ software, drum machines
+  - OSC:           Beat position and BPM pushed from external software
+  - Internal:      Free-running clock at configured BPM (fallback)
 """
 
 import asyncio
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import ClassVar, Optional
 
@@ -227,39 +232,6 @@ class ClockManager:
             self._midi_clock = None
 
 
-# ─── Buffer mode ───────────────────────────────────────────────────────────
-
-class BufferMode(str, Enum):
-    PASSTHROUGH = "passthrough"
-    LATENCY = "latency"
-    BEAT = "beat"
-
-
-class BeatDivision(str, Enum):
-    """Musical beat subdivisions for rhythm-locked buffer delay."""
-    EIGHTH = "1/8"         # Half a beat
-    QUARTER = "1/4"        # One beat
-    HALF = "1/2"           # Two beats
-    ONE_BAR = "1 bar"      # 4 beats
-    TWO_BAR = "2 bar"      # 8 beats
-    FOUR_BAR = "4 bar"     # 16 beats
-    EIGHT_BAR = "8 bar"    # 32 beats
-    SIXTEEN_BAR = "16 bar" # 64 beats
-
-
-# Beat multipliers: how many beats each division represents
-_BEAT_MULTIPLIERS = {
-    BeatDivision.EIGHTH: 0.5,
-    BeatDivision.QUARTER: 1.0,
-    BeatDivision.HALF: 2.0,
-    BeatDivision.ONE_BAR: 4.0,
-    BeatDivision.TWO_BAR: 8.0,
-    BeatDivision.FOUR_BAR: 16.0,
-    BeatDivision.EIGHT_BAR: 32.0,
-    BeatDivision.SIXTEEN_BAR: 64.0,
-}
-
-
 # ─── Scope SDK imports ─────────────────────────────────────────────────────
 
 try:
@@ -296,22 +268,23 @@ except ImportError:
 
 @dataclass
 class _BufferedFrame:
-    """A frame with wall-clock timestamp for FIFO buffer."""
+    """A frame with wall-clock timestamp and BPM at capture time."""
     frame: np.ndarray        # (H, W, C) uint8
     timestamp: float         # time.monotonic() when received
+    capture_bpm: float       # BPM at the time this frame was generated
 
 
 # ─── Config ────────────────────────────────────────────────────────────────
 
 if _HAS_SCOPE:
     class BpmSyncBufferConfig(BasePipelineConfig):
-        """Postprocessor config — latency buffer with visual fill indicator."""
+        """Latency buffer with playback speed control and BPM compensation."""
         pipeline_id: ClassVar[str] = "bpm_sync_buffer_vjtools"
         pipeline_name: ClassVar[str] = "BPM Sync Buffer (VJ.Tools)"
         pipeline_description: ClassVar[str] = (
-            "Adjustable latency buffer for smooth AI video playback. "
-            "Buffers generated frames and releases them at a steady rate. "
-            "Beat-locked and millisecond delay modes with visual fill overlay."
+            "Adjustable latency buffer with playback speed control. "
+            "BPM-stamped frames auto-compensate when tempo changes. "
+            "All faders MIDI-mappable."
         )
         supports_prompts: ClassVar[bool] = False
         modified: ClassVar[bool] = True
@@ -321,61 +294,91 @@ if _HAS_SCOPE:
             "text": ModeDefaults(default=True),
         }
 
-        # --- Performance controls (MIDI-mappable via category="input") ---
+        # ── Latency ───────────────────────────────────────────────────
 
-        buffer_mode: BufferMode = Field(
-            default=BufferMode.LATENCY,
-            json_schema_extra=ui_field_config(
-                order=0,
-                label="Buffer Mode",
-                category="input",
-            ),
-        )
-
-        latency_delay_ms: int = Field(
-            default=500,
+        latency_ms: int = Field(
+            default=0,
             ge=0,
             le=60000,
             json_schema_extra=ui_field_config(
-                order=1,
+                order=0,
                 label="Latency (ms)",
                 category="input",
             ),
         )
 
-        beat_division: BeatDivision = Field(
-            default=BeatDivision.ONE_BAR,
+        min_delay_ms: int = Field(
+            default=0,
+            ge=0,
+            le=60000,
+            json_schema_extra=ui_field_config(
+                order=1,
+                label="Min Delay (ms)",
+            ),
+        )
+
+        max_delay_ms: int = Field(
+            default=60000,
+            ge=0,
+            le=60000,
             json_schema_extra=ui_field_config(
                 order=2,
-                label="Beat Division",
-                category="input",
+                label="Max Delay (ms)",
             ),
         )
 
-        beat_multiplier: int = Field(
-            default=1,
-            ge=1,
-            le=16,
+        # ── Playback Speed ────────────────────────────────────────────
+
+        speed: float = Field(
+            default=1.0,
+            ge=0.25,
+            le=4.0,
             json_schema_extra=ui_field_config(
                 order=3,
-                label="× Multiplier",
+                label="Speed",
                 category="input",
             ),
         )
 
-        show_overlay: bool = Field(
-            default=True,
+        auto_speed: bool = Field(
+            default=False,
             json_schema_extra=ui_field_config(
                 order=4,
-                label="Show Overlay",
+                label="Auto Speed",
                 category="input",
             ),
         )
+
+        auto_speed_target: float = Field(
+            default=0.5,
+            ge=0.1,
+            le=0.9,
+            json_schema_extra=ui_field_config(
+                order=5,
+                label="Auto Target Fill",
+                category="input",
+            ),
+        )
+
+        # ── BPM / Tempo ──────────────────────────────────────────────
+
+        tempo_offset_pct: float = Field(
+            default=0.0,
+            ge=-50.0,
+            le=50.0,
+            json_schema_extra=ui_field_config(
+                order=6,
+                label="Tempo Offset %",
+                category="input",
+            ),
+        )
+
+        # ── Transport ────────────────────────────────────────────────
 
         hold: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=5,
+                order=7,
                 label="HOLD",
                 category="input",
             ),
@@ -384,18 +387,27 @@ if _HAS_SCOPE:
         reset_buffer: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=6,
+                order=8,
                 label="Reset",
                 category="input",
             ),
         )
 
-        # --- Clock config ---
+        show_overlay: bool = Field(
+            default=True,
+            json_schema_extra=ui_field_config(
+                order=9,
+                label="Show Overlay",
+                category="input",
+            ),
+        )
+
+        # ── Clock config ─────────────────────────────────────────────
 
         clock_source: ClockSource = Field(
             default=ClockSource.INTERNAL,
             json_schema_extra=ui_field_config(
-                order=7,
+                order=10,
                 label="Clock Source",
             ),
         )
@@ -405,7 +417,7 @@ if _HAS_SCOPE:
             ge=20.0,
             le=999.0,
             json_schema_extra=ui_field_config(
-                order=8,
+                order=11,
                 label="BPM",
                 category="input",
             ),
@@ -414,7 +426,7 @@ if _HAS_SCOPE:
         midi_device: str = Field(
             default="",
             json_schema_extra=ui_field_config(
-                order=9,
+                order=12,
                 label="MIDI Clock Device",
             ),
         )
@@ -423,7 +435,7 @@ if _HAS_SCOPE:
             default=0.0,
             ge=0.0,
             json_schema_extra=ui_field_config(
-                order=10,
+                order=13,
                 label="OSC Beat",
                 category="input",
             ),
@@ -433,13 +445,16 @@ else:
         """Standalone config for testing outside Scope."""
         def __init__(self, **kwargs):
             self.pipeline_id = kwargs.get("pipeline_id", "bpm_sync_buffer_vjtools")
-            self.buffer_mode = kwargs.get("buffer_mode", "latency")
-            self.latency_delay_ms = kwargs.get("latency_delay_ms", 500)
-            self.beat_division = kwargs.get("beat_division", "1 bar")
-            self.beat_multiplier = kwargs.get("beat_multiplier", 1)
-            self.show_overlay = kwargs.get("show_overlay", True)
+            self.latency_ms = kwargs.get("latency_ms", 0)
+            self.min_delay_ms = kwargs.get("min_delay_ms", 0)
+            self.max_delay_ms = kwargs.get("max_delay_ms", 60000)
+            self.speed = kwargs.get("speed", 1.0)
+            self.auto_speed = kwargs.get("auto_speed", False)
+            self.auto_speed_target = kwargs.get("auto_speed_target", 0.5)
+            self.tempo_offset_pct = kwargs.get("tempo_offset_pct", 0.0)
             self.hold = kwargs.get("hold", False)
             self.reset_buffer = kwargs.get("reset_buffer", False)
+            self.show_overlay = kwargs.get("show_overlay", True)
             self.clock_source = kwargs.get("clock_source", "internal")
             self.clock_bpm = kwargs.get("clock_bpm", 120.0)
             self.midi_device = kwargs.get("midi_device", "")
@@ -450,24 +465,33 @@ else:
 
 class BpmSyncBufferPostprocessor(Pipeline):
     """
-    Adjustable latency buffer for smooth AI video playback.
+    Adjustable latency buffer with playback speed control.
 
-    Accumulates AI-generated frames in a wall-clock FIFO and releases them
-    at a configurable delay. Binary-searches the FIFO for the closest frame
-    to the target playback time.
+    Architecture:
+      - FIFO of BPM-stamped frames with wall-clock timestamps
+      - A virtual playback head that advances through the FIFO
+      - Speed control: 1.0× = real-time, >1 = catching up, <1 = slowing down
+      - Auto-speed: PD controller keeps buffer fill at target level
+      - BPM compensation: if capture BPM ≠ playback BPM, speed auto-adjusts
+        so musical timing is preserved
 
-    This smooths out bursty chunk-based generation (12 frames at once, then
-    nothing) into steady-framerate output.
+    The latency fader sets how far back in the buffer the playback head starts.
+    At 0ms it's passthrough (latest frame). Crank it up and you're looking
+    at frames from the past, with speed controlling how fast you move through them.
 
     Visual overlay shows:
       - Fill bar: red → yellow → green → cyan as buffer fills
-      - Current mode and delay
+      - Current delay, speed, BPM
       - Input FPS and buffer depth
       - HOLD indicator when frozen
     """
 
     MAX_FIFO_FRAMES = 1800  # ~60s at 30fps
     FALLBACK_BPM = 120.0
+
+    # Auto-speed PD controller gains
+    AUTO_KP = 1.5   # Proportional: how aggressively to correct
+    AUTO_KD = 0.3   # Derivative: damping to prevent oscillation
 
     @classmethod
     def get_config_class(cls):
@@ -493,11 +517,18 @@ class BpmSyncBufferPostprocessor(Pipeline):
 
         # FIFO
         self._fifo: list[_BufferedFrame] = []
+
+        # Playback head — virtual time position in the FIFO
+        self._playback_time: float = 0.0  # wall-clock time of current playback position
+        self._last_call_time: float = 0.0  # when __call__ was last invoked
         self._current_output: Optional[np.ndarray] = None
 
         # Hold
         self._hold_active: bool = False
-        self._hold_target_time: float = 0.0
+
+        # Auto-speed state
+        self._prev_fill_error: float = 0.0
+        self._effective_speed: float = 1.0
 
         # FPS tracking
         self._input_count = 0
@@ -505,7 +536,7 @@ class BpmSyncBufferPostprocessor(Pipeline):
         self._fps_timestamps: list[float] = []
         self._input_fps = 0.0
 
-        logger.info(f"[Buffer] Initialized (clock={source.value}, delay={getattr(config, 'latency_delay_ms', 500)}ms)")
+        logger.info(f"[Buffer] Initialized (clock={source.value})")
 
     def __del__(self):
         if hasattr(self, "_clock"):
@@ -523,16 +554,25 @@ class BpmSyncBufferPostprocessor(Pipeline):
         if isinstance(video, list) and len(video) == 0:
             return {"video": torch.zeros(1, 1, 1, 3)}
 
-        # --- Read runtime params ---
-        mode = str(kwargs.get("buffer_mode", getattr(self.config, "buffer_mode", "latency")))
-        latency_ms = int(kwargs.get("latency_delay_ms", getattr(self.config, "latency_delay_ms", 500)))
-        beat_div_str = str(kwargs.get("beat_division", getattr(self.config, "beat_division", "1 bar")))
-        beat_mult = int(kwargs.get("beat_multiplier", getattr(self.config, "beat_multiplier", 1)))
-        show_overlay = kwargs.get("show_overlay", getattr(self.config, "show_overlay", True))
-        reset = kwargs.get("reset_buffer", getattr(self.config, "reset_buffer", False))
-        hold = kwargs.get("hold", getattr(self.config, "hold", False))
+        now = time.monotonic()
 
-        # --- Clock updates ---
+        # ── Read runtime params ───────────────────────────────────────
+        latency_ms = int(kwargs.get("latency_ms", getattr(self.config, "latency_ms", 0)))
+        min_delay = int(kwargs.get("min_delay_ms", getattr(self.config, "min_delay_ms", 0)))
+        max_delay = int(kwargs.get("max_delay_ms", getattr(self.config, "max_delay_ms", 60000)))
+        speed = float(kwargs.get("speed", getattr(self.config, "speed", 1.0)))
+        auto_speed = bool(kwargs.get("auto_speed", getattr(self.config, "auto_speed", False)))
+        auto_target = float(kwargs.get("auto_speed_target", getattr(self.config, "auto_speed_target", 0.5)))
+        tempo_offset = float(kwargs.get("tempo_offset_pct", getattr(self.config, "tempo_offset_pct", 0.0)))
+        show_overlay = bool(kwargs.get("show_overlay", getattr(self.config, "show_overlay", True)))
+        reset = bool(kwargs.get("reset_buffer", getattr(self.config, "reset_buffer", False)))
+        hold = bool(kwargs.get("hold", getattr(self.config, "hold", False)))
+
+        # Clamp latency to [min, max]
+        latency_ms = max(min_delay, min(max_delay, latency_ms))
+        delay_s = latency_ms / 1000.0
+
+        # ── Clock updates ─────────────────────────────────────────────
         clock_src_str = kwargs.get("clock_source", getattr(self.config, "clock_source", "internal"))
         clock_bpm = float(kwargs.get("clock_bpm", getattr(self.config, "clock_bpm", 120.0)))
         midi_dev = kwargs.get("midi_device", getattr(self.config, "midi_device", ""))
@@ -551,22 +591,28 @@ class BpmSyncBufferPostprocessor(Pipeline):
             osc_beat = float(kwargs.get("osc_beat", getattr(self.config, "osc_beat", 0.0)))
             self._clock.update_osc(beat=osc_beat, bpm=clock_bpm)
 
-        # --- Reset ---
+        current_bpm = self._clock.tempo or self.FALLBACK_BPM
+        # Apply manual tempo offset
+        adjusted_bpm = current_bpm * (1.0 + tempo_offset / 100.0)
+
+        # ── Reset ─────────────────────────────────────────────────────
         if reset:
             self._fifo.clear()
             self._current_output = None
             self._hold_active = False
+            self._playback_time = 0.0
+            self._last_call_time = 0.0
+            self._prev_fill_error = 0.0
+            self._effective_speed = 1.0
             logger.info("[Buffer] Reset")
 
-        # --- Hold ---
+        # ── Hold ──────────────────────────────────────────────────────
         if hold and not self._hold_active:
             self._hold_active = True
-            delay_s = self._delay_seconds(mode, latency_ms, beat_div_str, beat_mult)
-            self._hold_target_time = time.monotonic() - delay_s
         elif not hold and self._hold_active:
             self._hold_active = False
 
-        # --- Ingest frames ---
+        # ── Ingest frames ─────────────────────────────────────────────
         if isinstance(video, list):
             frames = torch.cat(video, dim=0).float()
         else:
@@ -576,7 +622,6 @@ class BpmSyncBufferPostprocessor(Pipeline):
             frames = frames * 255.0
 
         F, H, W, C = frames.shape
-        now = time.monotonic()
 
         # Track input FPS
         self._input_count += F
@@ -587,64 +632,133 @@ class BpmSyncBufferPostprocessor(Pipeline):
             if span > 0:
                 self._input_fps = (len(self._fps_timestamps) - 1) / span
 
-        # Add to FIFO
+        # Add to FIFO with BPM stamp
         for f_idx in range(F):
             frame_np = frames[f_idx].cpu().numpy().astype(np.uint8)
-            self._fifo.append(_BufferedFrame(frame=frame_np, timestamp=now))
+            self._fifo.append(_BufferedFrame(
+                frame=frame_np,
+                timestamp=now,
+                capture_bpm=adjusted_bpm,
+            ))
 
         while len(self._fifo) > self.MAX_FIFO_FRAMES:
             self._fifo.pop(0)
 
-        # --- Select output frame ---
-        delay_s = self._delay_seconds(mode, latency_ms, beat_div_str, beat_mult)
-        if mode == "passthrough" or delay_s <= 0:
-            # Zero delay = passthrough (latency fader all the way down)
-            output = self._fifo[-1].frame if self._fifo else np.zeros((H, W, C), dtype=np.uint8)
-        else:
-            output = self._pick_delayed(delay_s)
+        # ── Compute effective speed ───────────────────────────────────
+        dt = now - self._last_call_time if self._last_call_time > 0 else 0.0
+        self._last_call_time = now
 
-        if output is None:
-            output = np.zeros((H, W, C), dtype=np.uint8)
+        if delay_s <= 0 or not self._fifo:
+            # Passthrough: no delay, just return latest frame
+            output = self._fifo[-1].frame if self._fifo else np.zeros((H, W, C), dtype=np.uint8)
+            self._effective_speed = 1.0
+        elif self._hold_active:
+            # Frozen: don't advance playback head
+            output = self._pick_at_time(self._playback_time)
+            if output is None:
+                output = np.zeros((H, W, C), dtype=np.uint8)
+        else:
+            # ── Compute playback speed ────────────────────────────────
+            # 1. Start with manual speed
+            effective = speed
+
+            # 2. BPM compensation: if the frame was captured at a different BPM,
+            #    adjust speed so musical timing is preserved
+            #    (playback_bpm / capture_bpm) ratio
+            target_frame = self._find_frame_at_delay(delay_s, now)
+            if target_frame is not None and target_frame.capture_bpm > 0:
+                bpm_ratio = adjusted_bpm / target_frame.capture_bpm
+                effective *= bpm_ratio
+
+            # 3. Auto-speed: PD controller to maintain target fill level
+            if auto_speed:
+                fill = self._buffer_fill(delay_s)
+                fill_error = fill - auto_target  # positive = too full, negative = depleting
+                d_error = (fill_error - self._prev_fill_error) / max(dt, 0.001) if dt > 0 else 0.0
+                self._prev_fill_error = fill_error
+
+                auto_correction = 1.0 + (self.AUTO_KP * fill_error) + (self.AUTO_KD * d_error)
+                auto_correction = max(0.25, min(4.0, auto_correction))
+                effective *= auto_correction
+
+            # Clamp final speed
+            effective = max(0.1, min(8.0, effective))
+            self._effective_speed = effective
+
+            # ── Advance playback head ─────────────────────────────────
+            # Initialize playback time if needed
+            if self._playback_time <= 0:
+                self._playback_time = now - delay_s
+
+            # Advance by dt * effective_speed
+            self._playback_time += dt * effective
+
+            # Don't let playback head go past the newest frame
+            if self._fifo:
+                newest_t = self._fifo[-1].timestamp
+                if self._playback_time > newest_t:
+                    self._playback_time = newest_t
+
+            # Don't let playback head go before the oldest frame
+            if self._fifo:
+                oldest_t = self._fifo[0].timestamp
+                if self._playback_time < oldest_t:
+                    self._playback_time = oldest_t
+
+            output = self._pick_at_time(self._playback_time)
+            if output is None:
+                output = np.zeros((H, W, C), dtype=np.uint8)
 
         self._output_count += 1
 
-        # --- Overlay ---
+        # ── Overlay ───────────────────────────────────────────────────
         if show_overlay:
-            output = self._draw_overlay(output, mode, delay_s, latency_ms,
-                                         beat_div_str, beat_mult)
+            output = self._draw_overlay(
+                output, delay_s, latency_ms, self._effective_speed,
+                auto_speed, adjusted_bpm, tempo_offset,
+            )
 
         out_tensor = torch.from_numpy(output).float().unsqueeze(0) / 255.0
         return {"video": out_tensor}
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
-    def _delay_seconds(self, mode: str, latency_ms: int,
-                        beat_div_str: str = "1 bar", beat_mult: int = 1) -> float:
-        if mode == "beat":
-            bpm = self._clock.tempo or self.FALLBACK_BPM
-            # Resolve division → base beats
-            try:
-                division = BeatDivision(beat_div_str)
-            except ValueError:
-                division = BeatDivision.ONE_BAR
-            base_beats = _BEAT_MULTIPLIERS.get(division, 4.0)
-            total_beats = base_beats * beat_mult
-            return total_beats * 60.0 / bpm
-        elif mode == "latency":
-            return latency_ms / 1000.0
-        return 0.0
+    def _buffer_fill(self, delay_s: float) -> float:
+        """Buffer fill ratio: 0.0 = empty, 1.0 = full relative to delay."""
+        if not self._fifo or delay_s <= 0:
+            return 0.0
+        oldest = self._fifo[0].timestamp
+        newest = self._fifo[-1].timestamp
+        buffered_s = newest - oldest
+        return min(1.0, buffered_s / delay_s)
 
-    def _pick_delayed(self, delay_s: float) -> Optional[np.ndarray]:
+    def _find_frame_at_delay(self, delay_s: float, now: float) -> Optional[_BufferedFrame]:
+        """Find the frame closest to (now - delay_s) for BPM lookup."""
+        if not self._fifo:
+            return None
+        target = now - delay_s
+        # Quick bounds check
+        if target <= self._fifo[0].timestamp:
+            return self._fifo[0]
+        if target >= self._fifo[-1].timestamp:
+            return self._fifo[-1]
+        # Binary search
+        lo, hi = 0, len(self._fifo) - 1
+        while lo < hi:
+            mid = (lo + hi) >> 1
+            if self._fifo[mid].timestamp < target:
+                lo = mid + 1
+            else:
+                hi = mid
+        return self._fifo[lo]
+
+    def _pick_at_time(self, target_time: float) -> Optional[np.ndarray]:
+        """Binary-search FIFO for the frame closest to target_time."""
         if not self._fifo:
             return self._current_output
 
-        if self._hold_active and self._hold_target_time > 0:
-            target = self._hold_target_time
-        else:
-            target = time.monotonic() - delay_s
-
-        # Evict old
-        cutoff = target - 2.0
+        # Evict frames older than 2s before our target (keep some headroom)
+        cutoff = target_time - 2.0
         while len(self._fifo) > 1 and self._fifo[0].timestamp < cutoff:
             self._fifo.pop(0)
 
@@ -655,43 +769,36 @@ class BpmSyncBufferPostprocessor(Pipeline):
         lo, hi = 0, len(self._fifo) - 1
         while lo < hi:
             mid = (lo + hi) >> 1
-            if self._fifo[mid].timestamp < target:
+            if self._fifo[mid].timestamp < target_time:
                 lo = mid + 1
             else:
                 hi = mid
         best = self._fifo[lo]
         if lo > 0:
             prev = self._fifo[lo - 1]
-            if abs(prev.timestamp - target) < abs(best.timestamp - target):
+            if abs(prev.timestamp - target_time) < abs(best.timestamp - target_time):
                 best = prev
 
         self._current_output = best.frame
         return self._current_output
 
     def _draw_overlay(
-        self, frame: np.ndarray, mode: str,
-        delay_s: float, latency_ms: int,
-        beat_div_str: str = "1 bar", beat_mult: int = 1,
+        self, frame: np.ndarray,
+        delay_s: float, latency_ms: int, effective_speed: float,
+        auto_speed: bool, bpm: float, tempo_offset: float,
     ) -> np.ndarray:
-        """Draw buffer fill indicator and stats."""
+        """Draw buffer fill indicator, speed, and stats."""
         H, W = frame.shape[:2]
         out = frame.copy()
 
-        # --- Fill bar ---
+        # ── Fill bar ──────────────────────────────────────────────────
         bar_h = 8
         bar_margin = 6
         bar_y = H - bar_h - bar_margin
         bar_x = bar_margin
         bar_w = W - bar_margin * 2
 
-        # Calculate fill
-        if delay_s > 0 and self._fifo:
-            oldest = self._fifo[0].timestamp
-            newest = self._fifo[-1].timestamp
-            buffered_s = newest - oldest
-            fill = min(1.0, buffered_s / delay_s) if delay_s > 0 else 1.0
-        else:
-            fill = 0.0 if not self._fifo else 1.0
+        fill = self._buffer_fill(delay_s) if delay_s > 0 else (1.0 if self._fifo else 0.0)
 
         # Background
         overlay = out.copy()
@@ -702,51 +809,49 @@ class BpmSyncBufferPostprocessor(Pipeline):
         # Fill color: red → orange → green → cyan
         fill_w = max(0, int(fill * bar_w))
         if fill < 0.25:
-            # Red
             r, g, b = 220, 50, 50
         elif fill < 0.5:
-            # Orange
             t = (fill - 0.25) / 0.25
-            r = int(220 + (220 - 220) * t)
-            g = int(50 + (180 - 50) * t)
+            r = 220
+            g = int(50 + 130 * t)
             b = 50
         elif fill < 0.75:
-            # Green
             t = (fill - 0.5) / 0.25
             r = int(220 * (1 - t) + 50 * t)
-            g = int(180 + (210 - 180) * t)
-            b = int(50 + (50) * t)
+            g = int(180 + 30 * t)
+            b = int(50 + 50 * t)
         else:
-            # Cyan-ish green
             r, g, b = 50, 210, 180
 
         if fill_w > 0:
             cv2.rectangle(out, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h),
-                          (b, g, r), -1)  # OpenCV is BGR
+                          (b, g, r), -1)  # BGR
 
         # Border
         cv2.rectangle(out, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
                       (80, 80, 80), 1)
 
-        # --- Text ---
+        # ── Text ──────────────────────────────────────────────────────
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale = 0.38
         thick = 1
         text_y = bar_y - 5
         text_col = (220, 220, 220)
 
-        # Left: mode + delay
-        if mode == "beat":
-            bpm = self._clock.tempo or self.FALLBACK_BPM
-            div_label = beat_div_str
-            if beat_mult > 1:
-                label = f"BEAT {beat_mult}x {div_label}  ({delay_s*1000:.0f}ms @ {bpm:.0f}bpm)"
-            else:
-                label = f"BEAT {div_label}  ({delay_s*1000:.0f}ms @ {bpm:.0f}bpm)"
-        elif mode == "latency":
-            label = f"DELAY {latency_ms}ms" if latency_ms > 0 else "PASSTHROUGH"
-        else:
+        # Left: delay + speed + BPM
+        if latency_ms <= 0:
             label = "PASSTHROUGH"
+        else:
+            speed_label = f"{effective_speed:.2f}x"
+            if auto_speed:
+                speed_label = f"AUTO {speed_label}"
+
+            bpm_label = f"{bpm:.0f}bpm"
+            if abs(tempo_offset) > 0.1:
+                sign = "+" if tempo_offset > 0 else ""
+                bpm_label += f" ({sign}{tempo_offset:.0f}%)"
+
+            label = f"DELAY {latency_ms}ms  |  {speed_label}  |  {bpm_label}"
 
         cv2.putText(out, label, (bar_x, text_y), font, scale, text_col, thick, cv2.LINE_AA)
 
@@ -762,7 +867,6 @@ class BpmSyncBufferPostprocessor(Pipeline):
             hsz = cv2.getTextSize(hold_text, font, 0.7, 2)[0]
             hx = (W - hsz[0]) // 2
             hy = (H - hsz[1]) // 2
-            # Shadow
             cv2.putText(out, hold_text, (hx + 2, hy + 2), font, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
             cv2.putText(out, hold_text, (hx, hy), font, 0.7, (0, 80, 255), 2, cv2.LINE_AA)
 
