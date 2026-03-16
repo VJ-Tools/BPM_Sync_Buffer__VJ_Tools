@@ -25,7 +25,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import ClassVar, Optional
 
 import cv2
 import numpy as np
@@ -306,17 +306,17 @@ class _BufferedFrame:
 if _HAS_SCOPE:
     class BpmSyncBufferConfig(BasePipelineConfig):
         """Postprocessor config — latency buffer with visual fill indicator."""
-        pipeline_id: str = "bpm_sync_buffer_vjtools"
-        pipeline_name: str = "BPM Sync Buffer (VJ.Tools)"
-        pipeline_description: str = (
+        pipeline_id: ClassVar[str] = "bpm_sync_buffer_vjtools"
+        pipeline_name: ClassVar[str] = "BPM Sync Buffer (VJ.Tools)"
+        pipeline_description: ClassVar[str] = (
             "Adjustable latency buffer for smooth AI video playback. "
             "Buffers generated frames and releases them at a steady rate. "
             "Beat-locked and millisecond delay modes with visual fill overlay."
         )
-        supports_prompts: bool = False
-        modified: bool = True
-        usage = [UsageType.POSTPROCESSOR]
-        modes = {
+        supports_prompts: ClassVar[bool] = False
+        modified: ClassVar[bool] = True
+        usage: ClassVar[list] = [UsageType.POSTPROCESSOR]
+        modes: ClassVar[dict] = {
             "video": ModeDefaults(default=True),
             "text": ModeDefaults(default=True),
         }
