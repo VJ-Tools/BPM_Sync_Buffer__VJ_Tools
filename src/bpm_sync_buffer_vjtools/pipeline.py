@@ -294,7 +294,7 @@ if _HAS_SCOPE:
             "text": ModeDefaults(default=True),
         }
 
-        # ── Latency ───────────────────────────────────────────────────
+        # ── Performance Faders (live controls) ────────────────────────
 
         latency_ms: int = Field(
             default=0,
@@ -307,34 +307,12 @@ if _HAS_SCOPE:
             ),
         )
 
-        min_delay_ms: int = Field(
-            default=0,
-            ge=0,
-            le=60000,
-            json_schema_extra=ui_field_config(
-                order=1,
-                label="Min Delay (ms)",
-            ),
-        )
-
-        max_delay_ms: int = Field(
-            default=60000,
-            ge=0,
-            le=60000,
-            json_schema_extra=ui_field_config(
-                order=2,
-                label="Max Delay (ms)",
-            ),
-        )
-
-        # ── Playback Speed ────────────────────────────────────────────
-
         speed: float = Field(
             default=1.0,
             ge=0.25,
             le=4.0,
             json_schema_extra=ui_field_config(
-                order=3,
+                order=1,
                 label="Speed",
                 category="configuration",
             ),
@@ -343,42 +321,16 @@ if _HAS_SCOPE:
         auto_speed: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=4,
+                order=2,
                 label="Auto Speed",
                 category="configuration",
             ),
         )
 
-        auto_speed_target: float = Field(
-            default=0.5,
-            ge=0.1,
-            le=0.9,
-            json_schema_extra=ui_field_config(
-                order=5,
-                label="Auto Target Fill",
-                category="configuration",
-            ),
-        )
-
-        # ── BPM / Tempo ──────────────────────────────────────────────
-
-        tempo_offset_pct: float = Field(
-            default=0.0,
-            ge=-50.0,
-            le=50.0,
-            json_schema_extra=ui_field_config(
-                order=6,
-                label="Tempo Offset %",
-                category="configuration",
-            ),
-        )
-
-        # ── Transport ────────────────────────────────────────────────
-
         hold: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=7,
+                order=3,
                 label="HOLD",
                 category="configuration",
             ),
@@ -387,7 +339,7 @@ if _HAS_SCOPE:
         reset_buffer: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=8,
+                order=4,
                 label="Reset",
                 category="configuration",
             ),
@@ -396,19 +348,55 @@ if _HAS_SCOPE:
         show_overlay: bool = Field(
             default=False,
             json_schema_extra=ui_field_config(
-                order=9,
+                order=5,
                 label="Show Overlay",
                 category="configuration",
             ),
         )
 
-        # ── Clock config ─────────────────────────────────────────────
+        # ── Setup (set once, grayed out while streaming) ─────────────
+
+        min_delay_ms: int = Field(
+            default=0,
+            ge=0,
+            le=60000,
+            json_schema_extra=ui_field_config(
+                order=10,
+                label="Min Delay (ms)",
+                is_load_param=True,
+            ),
+        )
+
+        max_delay_ms: int = Field(
+            default=60000,
+            ge=0,
+            le=60000,
+            json_schema_extra=ui_field_config(
+                order=11,
+                label="Max Delay (ms)",
+                is_load_param=True,
+            ),
+        )
+
+        auto_speed_target: float = Field(
+            default=0.5,
+            ge=0.1,
+            le=0.9,
+            json_schema_extra=ui_field_config(
+                order=12,
+                label="Auto Target Fill",
+                is_load_param=True,
+            ),
+        )
+
+        # ── BPM / Clock (set once, grayed out while streaming) ───────
 
         clock_source: ClockSource = Field(
             default=ClockSource.INTERNAL,
             json_schema_extra=ui_field_config(
-                order=10,
+                order=20,
                 label="Clock Source",
+                is_load_param=True,
             ),
         )
 
@@ -417,8 +405,19 @@ if _HAS_SCOPE:
             ge=20.0,
             le=999.0,
             json_schema_extra=ui_field_config(
-                order=11,
+                order=21,
                 label="BPM",
+                category="configuration",
+            ),
+        )
+
+        tempo_offset_pct: float = Field(
+            default=0.0,
+            ge=-50.0,
+            le=50.0,
+            json_schema_extra=ui_field_config(
+                order=22,
+                label="Tempo Offset %",
                 category="configuration",
             ),
         )
@@ -426,8 +425,9 @@ if _HAS_SCOPE:
         midi_device: str = Field(
             default="",
             json_schema_extra=ui_field_config(
-                order=12,
+                order=23,
                 label="MIDI Clock Device",
+                is_load_param=True,
             ),
         )
 
@@ -435,7 +435,7 @@ if _HAS_SCOPE:
             default=0.0,
             ge=0.0,
             json_schema_extra=ui_field_config(
-                order=13,
+                order=24,
                 label="OSC Beat",
                 category="configuration",
             ),
